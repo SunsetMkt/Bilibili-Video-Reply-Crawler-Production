@@ -1,0 +1,79 @@
+name: "评论爬虫-从issue标题执行任务"
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: "获取issue标题"
+        id: get-issue
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          # 获取issue标题，保留并用于回复
+          result-encoding: string
+          script: |
+            // 获取issue标题
+            const title = context.payload.issue.title
+            // 保存变量，弃用 https://github.blog/changelog/2022-10-11-github-actions-deprecating-save-state-and-set-output-commands/
+            // core.setOutput('title', title)
+            // 保存 "{name}={value}" >> $GITHUB_ENV
+            core.exportVariable('title', title)
+      - name: "echo标题"
+        run: echo ${{ env.title }}
+      - name: "pip install -r requirements.txt"
+        run: |
+          pip install -r requirements.txt
+      - name: "根据保存的issue标题，执行任务"
+        run: |
+          python main.py -v ${{ env.title }} -o out.txt -V --do-not-replace
+      - name: "上传out.txt"
+        uses: actions/upload-artifact@v3
+        with:
+          name: out.txt
+          path: out.txt
+      - name: "计算SHA-256"
+        run: |
+          sha256sum out.txt > sha256.txt
+      - name: "上传sha256.txt"
+        uses: actions/upload-artifact@v3
+        with:
+          name: sha256.txt
+          path: sha256.txt
+      - name: "回复issue"
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const fs = require('fs');
+            const issue = context.payload.issue
+            // 读取out.txt
+            const out = fs.readFileSync('out.txt', 'utf8')
+            // 回复issue，maximum is 65536 characters，每65500个字符回复一次
+            const outArr = out.match(/[\s\S]{1,65500}/g)
+            for (let i = 0; i < outArr.length; i++) {
+              github.rest.issues.createComment({
+                issue_number: issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: '分段'+(i+1)+'\n'+'```'+'\n'+outArr[i]+'\n'+'```'
+              })
+              // 等待2秒
+              await new Promise(resolve => setTimeout(resolve, 2000))
+            }
+            // 添加tag
+            github.rest.issues.addLabels({
+              issue_number: issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ["comment-saved"]
+            })

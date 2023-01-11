@@ -1,0 +1,76 @@
+name: "保存网页-从issue标题执行任务"
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: "获取issue标题"
+        id: get-issue
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          # 获取issue标题，保留并用于回复
+          result-encoding: string
+          script: |
+            // 获取issue标题
+            const title = context.payload.issue.title
+            const baseurl = "https://www.bilibili.com/"
+            // 若标题以cv开头，添加read/前缀，否则加video/前缀
+            const url = title.startsWith("cv") ? baseurl + "read/cv" + title.substring(2) : baseurl + "video/" + title
+            // 保存 "{name}={value}" >> $GITHUB_ENV
+            core.exportVariable('url', url)
+      - name: "echoURL"
+        run: echo ${{ env.url }}
+      - name: "Installation from Docker Hub"
+        run: |
+          docker pull capsulecode/singlefile
+          docker tag capsulecode/singlefile singlefile
+      - name: "根据保存的issue标题，执行任务"
+        run: |
+          docker run singlefile "${{ env.url }}" > out.html
+      - name: "上传out.html"
+        uses: actions/upload-artifact@v3
+        with:
+          name: out.html
+          path: out.html
+      - name: "计算SHA-256"
+        run: |
+          sha256sum out.html > sha256.txt
+      - name: "上传sha256.txt"
+        uses: actions/upload-artifact@v3
+        with:
+          name: sha256.txt
+          path: sha256.txt
+      - name: "回复issue"
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            // 读取sha256.txt的内容
+            const sha = require('fs').readFileSync('sha256.txt', 'utf8')
+            // issue
+            const issue = context.payload.issue
+            const body = `网页已保存，见Artifacts。\nSHA-256: ${sha}`
+            github.rest.issues.createComment({
+              issue_number: issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            })
+            // 添加tag
+            github.rest.issues.addLabels({
+              issue_number: issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: ["page-saved"]
+            })
